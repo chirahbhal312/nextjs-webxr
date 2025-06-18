@@ -207,12 +207,12 @@ export default function Home() {
       <div ref={canvasRef} className="absolute top-0 left-0 w-full h-full z-0"></div>
       
       <canvas
-        ref={drawingCanvasRef}
-        id="drawingCanvas"
-        // width={window.innerWidth}
-        // height={window.innerHeight}
-        className="absolute top-0 left-0 z-10"
-      ></canvas>
+  ref={drawingCanvasRef}
+  id="drawingCanvas"
+  className="absolute top-0 left-0 z-10 w-screen h-[50vh]"
+  style={{ width: '100vw', height: '50vh' }}
+></canvas>
+
 
       {/* Control Panel */}
       <div className="absolute top-4 left-4 z-20 p-4 bg-white bg-opacity-75 rounded shadow-md">
