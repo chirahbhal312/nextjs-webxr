@@ -1,270 +1,261 @@
-// pages/index.js
-"use client"
-import { useEffect, useRef, useState } from "react";
-import * as THREE from "three";
-import { ARButton } from "three/examples/jsm/webxr/ARButton";
-import { WebGLRenderer } from "three";
+import { useEffect, useRef } from 'react';
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
+import { ARButton } from 'three/examples/jsm/webxr/ARButton';
 
 export default function Home() {
-  const canvasRef = useRef(null);
-  const sceneRef = useRef(null);
-  const cameraRef = useRef(null);
-  const rendererRef = useRef(null);
-  const drawingCanvasRef = useRef(null);
-
-  // Drawing settings
-  const [color, setColor] = useState("#000000"); // Stroke color
-  const [fillColor, setFillColor] = useState("#FFFFFF"); // Fill color
-  const [lineThickness, setLineThickness] = useState(5);
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [tool, setTool] = useState("pencil"); // pencil, eraser, text, circle, rectangle, triangle, polygon, freehand
-  const [isFilled, setIsFilled] = useState(false); // Toggle for filling shapes
-  const points = useRef([]);
-  const startPoint = useRef(null); // For shapes (circle, rectangle)
-  const polygonPoints = useRef([]); // For polygon drawing
-  const currentText = useRef(""); // For text annotation
+  const mountRef = useRef();
+  const inputRef = useRef();
 
   useEffect(() => {
+    const container = mountRef.current;
     const scene = new THREE.Scene();
-    sceneRef.current = scene;
-    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    cameraRef.current = camera;
-    
-    const renderer = new WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    rendererRef.current = renderer;
-    canvasRef.current.appendChild(renderer.domElement);
-    
-    // Setup AR button
-    const arButton = ARButton.createButton(renderer, {
-      requiredFeatures: ["hit-test"],
+    const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.01, 100);
+    camera.position.set(2, 2, 4);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(container.clientWidth, container.clientHeight);
+    renderer.xr.enabled = true;
+    container.appendChild(renderer.domElement);
+    container.appendChild(ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] }));
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    renderer.xr.addEventListener('sessionstart', () => (controls.enabled = false));
+    renderer.xr.addEventListener('sessionend', () => (controls.enabled = true));
+
+    const listener = new THREE.AudioListener();
+    camera.add(listener);
+    scene.add(new THREE.AmbientLight(0xffffff, 1));
+
+    const gltfLoader = new GLTFLoader();
+    const fbxLoader = new FBXLoader();
+
+    const clock = new THREE.Clock();
+    let mixer = null;
+    const meshList = [];
+    const audioList = [];
+    let animationList = [];
+
+    let hitTestSource = null;
+    let hitTestSourceRequested = false;
+    let placedModel = null;
+    let modelPlaced = false;
+
+    const reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.05, 0.08, 32).rotateX(-Math.PI / 2),
+      new THREE.MeshBasicMaterial({ color: 0x00ff00 })
+    );
+    reticle.matrixAutoUpdate = false;
+    reticle.visible = false;
+    scene.add(reticle);
+
+    const raycaster = new THREE.Raycaster();
+    const mouse = new THREE.Vector2();
+
+    const dragPlane = new THREE.Plane();
+    const dragIntersection = new THREE.Vector3();
+    const dragOffset = new THREE.Vector3();
+    let isDragging = false;
+    let initialDistance = 0;
+    let initialScale = 1;
+    let rotationStartAngle = 0;
+    let initialRotationY = 0;
+
+    function processModel(model, animations = []) {
+      if (placedModel) scene.remove(placedModel);
+      placedModel = model;
+
+      meshList.length = 0;
+      audioList.length = 0;
+      animationList = animations;
+
+      model.traverse(child => {
+        if (child.isMesh) meshList.push(child);
+        if (child.type === 'Audio') audioList.push(child);
+      });
+
+      const box = new THREE.Box3().setFromObject(model);
+      const center = box.getCenter(new THREE.Vector3());
+      model.position.sub(center);
+      const sizeVec = box.getSize(new THREE.Vector3());
+      const maxDim = Math.max(sizeVec.x, sizeVec.y, sizeVec.z);
+      const scale = Math.min(1, 0.6 / maxDim);
+      model.scale.setScalar(scale);
+      model.position.y = 0;
+
+      mixer = animations.length ? new THREE.AnimationMixer(model) : null;
+
+      document.getElementById('meshButtons').innerHTML = '';
+      animations.forEach((clip, i) => {
+        const btn = document.createElement('button');
+        btn.textContent = clip.name || `Animation ${i + 1}`;
+        btn.onclick = () => {
+          mixer.stopAllAction();
+          mixer.clipAction(clip).reset().play();
+        };
+        document.getElementById('meshButtons').appendChild(btn);
+      });
+
+      document.getElementById('animations').textContent = JSON.stringify(animations.map(a => a.name), null, 2);
+      document.getElementById('audios').textContent = JSON.stringify(audioList.map((_, i) => `Audio ${i}`), null, 2);
+      document.getElementById('selectedMesh').textContent = 'None';
+    }
+
+    inputRef.current.onchange = e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = evt => {
+        const buffer = evt.target.result;
+        if (file.name.toLowerCase().endsWith('.fbx')) {
+          const model = fbxLoader.parse(buffer, '');
+          processModel(model, []);
+        } else {
+          gltfLoader.parse(buffer, '', gltf => processModel(gltf.scene, gltf.animations));
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    };
+
+    function handleRaycast(raycaster) {
+      const intersects = raycaster.intersectObjects(meshList, true);
+      if (intersects.length > 0) {
+        const mesh = intersects[0].object;
+        document.getElementById('selectedMesh').textContent = mesh.name || 'Unnamed Mesh';
+        const idx = meshList.indexOf(mesh);
+        if (idx >= 0 && audioList[idx]) {
+          audioList[idx].setVolume(1.0);
+          audioList[idx].play();
+        }
+        if (mixer && mesh.name) {
+          const clip = animationList.find(c => c.name === mesh.name);
+          if (clip) {
+            mixer.stopAllAction();
+            mixer.clipAction(clip).reset().play();
+          }
+        }
+      }
+    }
+
+    window.addEventListener('click', e => {
+      mouse.x = (e.clientX / container.clientWidth) * 2 - 1;
+      mouse.y = -(e.clientY / container.clientHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      handleRaycast(raycaster);
     });
-    document.body.appendChild(arButton);
 
-    // Add some light
-    const light = new THREE.AmbientLight(0xffffff, 1);
-    scene.add(light);
+    const controller = renderer.xr.getController(0);
+    controller.addEventListener('select', () => {
+      if (reticle.visible && placedModel && !modelPlaced) {
+        placedModel.position.setFromMatrixPosition(reticle.matrix);
+        scene.add(placedModel);
+        reticle.visible = false;
+        hitTestSourceRequested = true;
+        hitTestSource = null;
+        modelPlaced = true;
+      } else {
+        raycaster.ray.origin.setFromMatrixPosition(controller.matrixWorld);
+        raycaster.ray.direction.set(0, 0, -1).transformDirection(controller.matrixWorld);
+        handleRaycast(raycaster);
+      }
+    });
+    scene.add(controller);
 
-    // Handle drawing
-    const draw = (event) => {
-      const rect = drawingCanvasRef.current.getBoundingClientRect();
-      const x = event.clientX - rect.left;
-      const y = event.clientY - rect.top;
+    window.addEventListener('touchstart', e => {
+      if (!placedModel) return;
+      if (e.touches.length === 1) {
+        isDragging = true;
+        const touch = e.touches[0];
+        const ndc = new THREE.Vector2((touch.clientX / container.clientWidth) * 2 - 1, -(touch.clientY / container.clientHeight) * 2 + 1);
+        raycaster.setFromCamera(ndc, camera);
+        dragPlane.setFromNormalAndCoplanarPoint(camera.getWorldDirection(new THREE.Vector3()).normalize(), placedModel.position);
+        raycaster.ray.intersectPlane(dragPlane, dragIntersection);
+        dragOffset.copy(dragIntersection).sub(placedModel.position);
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        initialDistance = Math.hypot(dx, dy);
+        initialScale = placedModel.scale.x;
+        rotationStartAngle = Math.atan2(dy, dx);
+        initialRotationY = placedModel.rotation.y;
+      }
+    });
 
-      if (isDrawing && tool === "pencil") {
-        points.current.push({ x, y });
-        const ctx = drawingCanvasRef.current.getContext("2d");
-        ctx.lineWidth = lineThickness;
-        ctx.strokeStyle = color;
-        ctx.lineJoin = ctx.lineCap = "round";
-        ctx.beginPath();
-        ctx.moveTo(points.current[points.current.length - 2]?.x || x, points.current[points.current.length - 2]?.y || y);
-        ctx.lineTo(x, y);
-        ctx.stroke();
-      } else if (isDrawing && tool === "eraser") {
-        const ctx = drawingCanvasRef.current.getContext("2d");
-        ctx.clearRect(x - lineThickness / 2, y - lineThickness / 2, lineThickness, lineThickness);
-      } else if (tool === "rectangle" || tool === "circle") {
-        // Draw shapes on mouse move when dragging
-        if (startPoint.current) {
-          const ctx = drawingCanvasRef.current.getContext("2d");
-          ctx.lineWidth = lineThickness;
-          ctx.strokeStyle = color;
-          ctx.lineJoin = ctx.lineCap = "round";
-          ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height); // Clear canvas first
-          if (tool === "rectangle") {
-            if (isFilled) {
-              ctx.fillStyle = fillColor;
-              ctx.fillRect(startPoint.current.x, startPoint.current.y, x - startPoint.current.x, y - startPoint.current.y); // Fill shape
-            }
-            ctx.strokeRect(startPoint.current.x, startPoint.current.y, x - startPoint.current.x, y - startPoint.current.y); // Draw border
-          } else if (tool === "circle") {
-            const radius = Math.sqrt(Math.pow(x - startPoint.current.x, 2) + Math.pow(y - startPoint.current.y, 2));
-            if (isFilled) {
-              ctx.fillStyle = fillColor;
-              ctx.beginPath();
-              ctx.arc(startPoint.current.x, startPoint.current.y, radius, 0, Math.PI * 2);
-              ctx.fill(); // Fill shape
-            }
-            ctx.beginPath();
-            ctx.arc(startPoint.current.x, startPoint.current.y, radius, 0, Math.PI * 2);
-            ctx.stroke(); // Draw border
-          }
-        }
-      } else if (tool === "triangle" || tool === "polygon") {
-        // Draw triangle or polygon
-        const ctx = drawingCanvasRef.current.getContext("2d");
-        ctx.lineWidth = lineThickness;
-        ctx.strokeStyle = color;
-        ctx.lineJoin = ctx.lineCap = "round";
+    window.addEventListener('touchmove', e => {
+      if (!placedModel) return;
+      if (e.touches.length === 1 && isDragging) {
+        const touch = e.touches[0];
+        const ndc = new THREE.Vector2((touch.clientX / container.clientWidth) * 2 - 1, -(touch.clientY / container.clientHeight) * 2 + 1);
+        raycaster.setFromCamera(ndc, camera);
+        raycaster.ray.intersectPlane(dragPlane, dragIntersection);
+        placedModel.position.copy(dragIntersection.sub(dragOffset));
+      } else if (e.touches.length === 2) {
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const newDistance = Math.hypot(dx, dy);
+        const scale = initialScale * (newDistance / initialDistance);
+        placedModel.scale.set(scale, scale, scale);
+        const angle = Math.atan2(dy, dx);
+        placedModel.rotation.y = initialRotationY + (angle - rotationStartAngle);
+      }
+    });
 
-        // For triangle (3 points)
-        if (tool === "triangle" && polygonPoints.current.length === 2) {
-          ctx.beginPath();
-          ctx.moveTo(polygonPoints.current[0].x, polygonPoints.current[0].y);
-          ctx.lineTo(polygonPoints.current[1].x, polygonPoints.current[1].y);
-          ctx.lineTo(x, y);
-          ctx.closePath();
-          if (isFilled) {
-            ctx.fillStyle = fillColor;
-            ctx.fill(); // Fill triangle
-          }
-          ctx.stroke(); // Draw border
-        }
+    window.addEventListener('touchend', () => (isDragging = false));
 
-        // For polygon (multiple points)
-        if (tool === "polygon") {
-          polygonPoints.current.push({ x, y });
-          ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height); // Clear canvas first
-          ctx.beginPath();
-          ctx.moveTo(polygonPoints.current[0].x, polygonPoints.current[0].y);
-          polygonPoints.current.forEach((point, index) => {
-            if (index > 0) ctx.lineTo(point.x, point.y);
+    function animate(time, frame) {
+      mixer?.update(clock.getDelta());
+      if (frame && !modelPlaced) {
+        const ref = renderer.xr.getReferenceSpace();
+        const session = renderer.xr.getSession();
+        if (!hitTestSourceRequested) {
+          session.requestReferenceSpace('viewer').then(vref =>
+            session.requestHitTestSource({ space: vref }).then(src => (hitTestSource = src))
+          );
+          session.addEventListener('end', () => {
+            hitTestSourceRequested = false;
+            hitTestSource = null;
+            modelPlaced = false;
           });
-          ctx.lineTo(x, y); // Draw line to current position
-          ctx.closePath();
-          if (isFilled) {
-            ctx.fillStyle = fillColor;
-            ctx.fill(); // Fill polygon
-          }
-          ctx.stroke(); // Draw border
+          hitTestSourceRequested = true;
+        }
+        if (hitTestSource) {
+          const hits = frame.getHitTestResults(hitTestSource);
+          if (hits.length > 0) {
+            const pose = hits[0].getPose(ref);
+            reticle.visible = true;
+            reticle.matrix.fromArray(pose.transform.matrix);
+          } else reticle.visible = false;
         }
       }
-    };
+      renderer.render(scene, camera);
+    }
 
-    const handleMouseDown = (event) => {
-      const rect = drawingCanvasRef.current.getBoundingClientRect();
-      const x = event.clientX - rect.left;
-      const y = event.clientY - rect.top;
-      setIsDrawing(true);
-      
-      if (tool === "rectangle" || tool === "circle") {
-        startPoint.current = { x, y };
-      } else if (tool === "text") {
-        // Add text annotation on click for text tool
-        const text = prompt("Enter text:");
-        if (text) {
-          const ctx = drawingCanvasRef.current.getContext("2d");
-          ctx.fillStyle = color;
-          ctx.font = "30px Arial";
-          ctx.fillText(text, x, y);
-        }
-      } else if (tool === "triangle") {
-        polygonPoints.current.push({ x, y });
-        if (polygonPoints.current.length === 3) {
-          const ctx = drawingCanvasRef.current.getContext("2d");
-          ctx.beginPath();
-          ctx.moveTo(polygonPoints.current[0].x, polygonPoints.current[0].y);
-          ctx.lineTo(polygonPoints.current[1].x, polygonPoints.current[1].y);
-          ctx.lineTo(polygonPoints.current[2].x, polygonPoints.current[2].y);
-          ctx.closePath();
-          if (isFilled) {
-            ctx.fillStyle = fillColor;
-            ctx.fill(); // Fill triangle
-          }
-          ctx.stroke();
-          polygonPoints.current = []; // Reset for next triangle
-        }
-      }
-    };
+    renderer.setAnimationLoop(animate);
 
-    const handleMouseUp = () => {
-      setIsDrawing(false);
-      startPoint.current = null; // Reset startPoint after drawing a shape
-    };
-
-    // Event listeners for drawing
-    drawingCanvasRef.current.addEventListener("mousedown", handleMouseDown);
-    drawingCanvasRef.current.addEventListener("mouseup", handleMouseUp);
-    drawingCanvasRef.current.addEventListener("mousemove", draw);
-
-    const animate = () => {
-      // Update and render the AR scene
-      if (rendererRef.current) rendererRef.current.render(scene, cameraRef.current);
-      requestAnimationFrame(animate);
-    };
-    animate();
-
-    // Clean up listeners
-    return () => {
-      drawingCanvasRef.current.removeEventListener("mousedown", handleMouseDown);
-      drawingCanvasRef.current.removeEventListener("mouseup", handleMouseUp);
-      drawingCanvasRef.current.removeEventListener("mousemove", draw);
-    };
-  }, [color, fillColor, lineThickness, tool, isDrawing, isFilled]);
-
-  // Clear the drawing canvas
-  const clearCanvas = () => {
-    const ctx = drawingCanvasRef.current.getContext("2d");
-    ctx.clearRect(0, 0, drawingCanvasRef.current.width, drawingCanvasRef.current.height);
-    points.current = []; // Reset the drawing points
-    polygonPoints.current = []; // Reset polygon points
-  };
+    window.addEventListener('resize', () => {
+      camera.aspect = container.clientWidth / container.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(container.clientWidth, container.clientHeight);
+    });
+  }, []);
 
   return (
-    <div className="relative">
-      <h1 className="text-4xl font-bold text-center mb-6">AR Painting App</h1>
-      <div ref={canvasRef} className="absolute top-0 left-0 w-full h-full z-0"></div>
-      
-      <canvas
-  ref={drawingCanvasRef}
-  id="drawingCanvas"
-  className="absolute top-0 left-0 z-10 w-screen h-[50vh]"
-  style={{ width: '100vw', height: '50vh' }}
-></canvas>
-
-
-      {/* Control Panel */}
-      <div className="absolute top-4 left-4 z-20 p-4 bg-white bg-opacity-75 rounded shadow-md">
-        <div className="mb-3">
-          <label htmlFor="colorPicker" className="block text-lg font-medium">Stroke Color:</label>
-          <input
-            type="color"
-            id="colorPicker"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            className="w-full mt-2"
-          />
-        </div>
-        <div className="mb-3">
-          <label htmlFor="fillColorPicker" className="block text-lg font-medium">Fill Color:</label>
-          <input
-            type="color"
-            id="fillColorPicker"
-            value={fillColor}
-            onChange={(e) => setFillColor(e.target.value)}
-            className="w-full mt-2"
-          />
-        </div>
-        <div className="mb-3">
-          <label className="block text-lg font-medium">Fill Shapes:</label>
-          <input
-            type="checkbox"
-            id="fillToggle"
-            checked={isFilled}
-            onChange={(e) => setIsFilled(e.target.checked)}
-            className="mr-2"
-          />
-          <span>Enable filling shapes</span>
-        </div>
-        <div className="mb-3">
-          <button
-            onClick={() => setTool(tool === "pencil" ? "eraser" : "pencil")}
-            className="w-full bg-blue-500 text-white p-2 rounded hover:bg-blue-700"
-          >
-            Switch to {tool === "pencil" ? "Eraser" : "Pencil"}
-          </button>
-        </div>
-        {/* Add other buttons for shapes and text tools as before */}
-        <div>
-          <button
-            onClick={clearCanvas}
-            className="w-full bg-red-500 text-white p-2 rounded hover:bg-red-700"
-          >
-            Clear Canvas
-          </button>
-        </div>
+    <>
+      <div ref={mountRef} style={{ width: '100vw', height: '100vh' }} />
+      <input ref={inputRef} type="file" id="modelInput" accept=".glb,.gltf,.fbx" style={{ position: 'absolute', top: 10, left: 10, zIndex: 10 }} />
+      <div id="infoPanel" style={{
+        position: 'absolute', top: 0, right: 0, width: 300,
+        height: '100%', overflowY: 'auto', background: '#111',
+        color: '#eee', padding: 15, fontSize: 14, zIndex: 10
+      }}>
+        <h3>Animations</h3>
+        <div id="meshButtons">Load a model to see animations...</div>
+        <h3>All Animation Names</h3><pre id="animations"></pre>
+        <h3>Audios</h3><pre id="audios"></pre>
+        <h3>Selected Mesh</h3><div id="selectedMesh">None</div>
       </div>
-    </div>
+    </>
   );
 }
