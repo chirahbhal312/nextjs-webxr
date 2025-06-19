@@ -113,7 +113,7 @@ export default function Home() {
 
     // Load from session storage
     const stored = sessionStorage.getItem('model');
-    const modelType = sessionStorage.getItem('modelType'); // 'glb', 'gltf', or 'fbx'
+    const modelType = sessionStorage.getItem('modelType');
 
     if (stored && modelType) {
       const buffer = base64ToArrayBuffer(stored);
@@ -251,9 +251,22 @@ export default function Home() {
 
   return (
     <>
+      <a href="/uploader" style={{
+        position: 'absolute',
+        top: 10,
+        left: 10,
+        zIndex: 99,
+        padding: '6px 12px',
+        background: '#222',
+        color: '#fff',
+        borderRadius: 4,
+        textDecoration: 'none',
+        fontSize: '14px'
+      }}>Upload Model</a>
+
       <div ref={mountRef} style={{ width: '100vw', height: '100vh' }} />
       <div id="infoPanel" style={{
-        position: 'absolute', top: 0, right: 0, width: 300,
+        position: 'absolute', top: 0, right: 0, width: 100,
         height: '100%', overflowY: 'auto', background: '#111',
         color: '#eee', padding: 15, fontSize: 14, zIndex: 10
       }}>
