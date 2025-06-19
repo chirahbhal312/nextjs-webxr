@@ -1,4 +1,4 @@
-'use client'
+'use client';
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader';
@@ -8,9 +8,16 @@ import { ARButton } from 'three/examples/jsm/webxr/ARButton';
 
 export default function Home() {
   const mountRef = useRef();
-  const inputRef = useRef();
 
   useEffect(() => {
+    const base64ToArrayBuffer = base64 => {
+      const binary = atob(base64);
+      const len = binary.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) bytes[i] = binary.charCodeAt(i);
+      return bytes.buffer;
+    };
+
     const container = mountRef.current;
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(60, container.clientWidth / container.clientHeight, 0.01, 100);
@@ -104,21 +111,21 @@ export default function Home() {
       document.getElementById('selectedMesh').textContent = 'None';
     }
 
-    inputRef.current.onchange = e => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = evt => {
-        const buffer = evt.target.result;
-        if (file.name.toLowerCase().endsWith('.fbx')) {
-          const model = fbxLoader.parse(buffer, '');
-          processModel(model, []);
-        } else {
-          gltfLoader.parse(buffer, '', gltf => processModel(gltf.scene, gltf.animations));
-        }
-      };
-      reader.readAsArrayBuffer(file);
-    };
+    // Load from session storage
+    const stored = sessionStorage.getItem('model');
+    const modelType = sessionStorage.getItem('modelType'); // 'glb', 'gltf', or 'fbx'
+
+    if (stored && modelType) {
+      const buffer = base64ToArrayBuffer(stored);
+      if (modelType === 'fbx') {
+        const model = fbxLoader.parse(buffer, '');
+        processModel(model, []);
+      } else {
+        gltfLoader.parse(buffer, '', gltf => processModel(gltf.scene, gltf.animations));
+      }
+    } else {
+      console.warn('No model found in session storage.');
+    }
 
     function handleRaycast(raycaster) {
       const intersects = raycaster.intersectObjects(meshList, true);
@@ -245,7 +252,6 @@ export default function Home() {
   return (
     <>
       <div ref={mountRef} style={{ width: '100vw', height: '100vh' }} />
-      <input ref={inputRef} type="file" id="modelInput" accept=".glb,.gltf,.fbx" style={{ position: 'absolute', top: 10, left: 10, zIndex: 10 }} />
       <div id="infoPanel" style={{
         position: 'absolute', top: 0, right: 0, width: 300,
         height: '100%', overflowY: 'auto', background: '#111',
